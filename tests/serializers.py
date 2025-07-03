@@ -1,9 +1,10 @@
 """
 For the tests.
 """
+
 from rest_framework import serializers
 
-from drf_dynamic_fields import DynamicFieldsMixin
+from drf_dynamic_fields import DynamicFieldsMixin, DeferredFieldsMixin
 
 from .models import Teacher, School
 
@@ -29,7 +30,9 @@ class TeacherSerializer(DynamicFieldsMixin, serializers.ModelSerializer):
         return request.build_absolute_uri("/api/v1/teacher/{}".format(teacher.pk))
 
 
-class SchoolSerializer(DynamicFieldsMixin, serializers.ModelSerializer):
+class SchoolSerializer(
+    DynamicFieldsMixin, DeferredFieldsMixin, serializers.ModelSerializer
+):
     """
     Interesting enough serializer because the TeacherSerializer
     will use ListSerializer due to the `many=True`
@@ -40,3 +43,13 @@ class SchoolSerializer(DynamicFieldsMixin, serializers.ModelSerializer):
     class Meta:
         model = School
         fields = ("id", "teachers", "name")
+
+
+class ChildSerializer(DynamicFieldsMixin, serializers.Serializer):
+    secret = serializers.CharField()
+    public = serializers.CharField()
+
+
+class ParentSerializer(DynamicFieldsMixin, serializers.Serializer):
+    id = serializers.IntegerField()
+    child = ChildSerializer()
