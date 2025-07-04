@@ -139,3 +139,30 @@ class DeferredFieldsMixinTests(TestCase):
         prefetch = qs_mock._prefetch_args[0]
         deferred_fields, _ = prefetch.queryset.query.deferred_loading
         self.assertEqual(deferred_fields, {"age", "id"})
+
+    def test_deffer_nested_fields_combining_fields_and_omit(self):
+        """Omit and allowed fields used together are deferred."""
+        qs_mock = self.make_qs_mock()
+        SchoolDeferredViewSet.queryset = qs_mock
+
+        request = self.factory.get(
+            "/",
+            {
+                "fields": "id,name,teachers__name,teachers__age",
+                "omit": "name,teachers__age",
+            },
+        )
+        response = self.view(request)
+        self.assertEqual(response.status_code, 200)
+
+        # name field should be deferred
+        self.assertEqual(qs_mock._deferred_args, ["name"])
+
+        # One Prefetch for teachers
+        self.assertEqual(response.data["prefetches"], ["teachers"])
+        self.assertEqual(len(qs_mock._prefetch_args), 1)
+
+        # Confirm the prefetch deferred field matches the no selected fields.
+        prefetch = qs_mock._prefetch_args[0]
+        deferred_fields, _ = prefetch.queryset.query.deferred_loading
+        self.assertEqual(deferred_fields, {"age", "id"})

@@ -22,9 +22,10 @@ class DynamicFieldsMixin(object):
 
         A blank `fields` parameter (?fields) will remove all fields. Not
         passing `fields` will pass all fields individual fields are comma
-        separated (?fields=id,name,url,email).
+        separated (?fields=id,name,url,email,teachers__age).
 
         """
+
         fields = super(DynamicFieldsMixin, self).fields
         if not hasattr(self, "_context"):
             # We are being called before a request cycle
@@ -38,6 +39,7 @@ class DynamicFieldsMixin(object):
         )
         if not (is_root or parent_is_list_root):
             return fields
+
         try:
             request = self.context["request"]
         except KeyError:
@@ -65,12 +67,12 @@ class DynamicFieldsMixin(object):
         except AttributeError:
             omit_fields = []
 
-        # Save for deferred logic
         self._flat_allow = set()
         self._flat_omit = set()
         self._nested_allow = {}
         self._nested_omit = {}
 
+        # store top-level and nested fields specified in the `fields` argument.
         for filtered_field in filter_fields:
             if "__" in filtered_field:
                 parent, child = filtered_field.split("__", 1)
@@ -81,6 +83,7 @@ class DynamicFieldsMixin(object):
             else:
                 self._flat_allow.add(filtered_field)
 
+        # store top-level and nested fields in the `omit` argument.
         for omitted_field in omit_fields:
             if "__" in omitted_field:
                 parent, child = omitted_field.split("__", 1)
@@ -105,7 +108,7 @@ class DynamicFieldsMixin(object):
         return fields
 
     def to_representation(self, instance):
-        """Use this method to prune filtered fields from a nested serializer."""
+        """This method prunes filtered fields from a nested serializer."""
         representation = super(DynamicFieldsMixin, self).to_representation(instance)
 
         # Apply nested omit on dicts and lists of dicts
@@ -114,8 +117,8 @@ class DynamicFieldsMixin(object):
                 continue
             parent_instance = representation[parent]
 
-            # helper to drop keys on a single dict
             def do_omit(d):
+                """Helper to drop fields on a single dict"""
                 for child in omit_list:
                     d.pop(child, None)
 
@@ -134,6 +137,7 @@ class DynamicFieldsMixin(object):
             parent_instance = representation[parent]
 
             def do_allow(d):
+                """Helper to include fields allowed on a single dict"""
                 return {
                     field_name: field_value
                     for field_name, field_value in d.items()
@@ -150,83 +154,87 @@ class DynamicFieldsMixin(object):
 
         return representation
 
-    def _flat_whitelist_deferred(self):
+    def _get_disallowed_top_level_fields_to_defer(self):
         """
         Determine which top-level model fields should be deferred when an explicit
-        omit/fields filter is in use.
+        fields filter is in use.
+        Other model fields not explicitly included in 'fields' are deferred.
         """
         allow = getattr(self, "_flat_allow", None)
         model = getattr(self.Meta, "model", None)
         if not allow or model is None:
             return []
 
-        names = [
-            fld.name
-            for fld in model._meta.get_fields()
-            if getattr(fld, "concrete", False)
+        # Filter out fields that have a database column associated with them.
+        field_names = [
+            field.name
+            for field in model._meta.get_fields()
+            if getattr(field, "concrete", False)
         ]
-        return [
-            name
-            for name in names
-            if name not in allow and name not in getattr(self, "_flat_omit", [])
-        ]
+        return [field_name for field_name in field_names if field_name not in allow]
 
-    def _nested_whitelist_deferred(self):
+    def _get_disallowed_nested_level_fields_to_defer(self):
         """
         Determine which nested-model fields should be deferred for each parent serializer
-        when an explicit fields/omit filter is in use.
+        when an explicit fields filter is in use.
+        Other model nested fields not explicitly included in 'fields' are deferred.
         """
-        results = []
+        fields_to_defer = []
         for parent, allow_list in getattr(self, "_nested_allow", {}).items():
             field = self.fields.get(parent)
             if not field:
                 continue
 
-            child_ser = getattr(field, "child", field)
-            nested_model = getattr(child_ser.Meta, "model", None)
+            child_serializer = getattr(field, "child", field)
+            nested_model = getattr(child_serializer.Meta, "model", None)
             if nested_model is None:
                 continue
 
-            omitted = set(getattr(self, "_nested_omit", {}).get(parent, []))
-            concrete_names = [
-                fld.name
-                for fld in nested_model._meta.get_fields()
-                if getattr(fld, "concrete", False)
+            # Filter out nested fields that have a database column associated
+            # with them.
+            field_names = [
+                field.name
+                for field in nested_model._meta.get_fields()
+                if getattr(field, "concrete", False)
             ]
-            for name in concrete_names:
-                if name not in allow_list and name not in omitted:
-                    results.append(f"{parent}__{name}")
+            for field_name in field_names:
+                if field_name not in allow_list:
+                    fields_to_defer.append(f"{parent}__{field_name}")
 
-        return results
+        return fields_to_defer
 
     def get_deferred_model_fields(self):
         """
-        Returns flat list of omitted model-fields; top-level and nested.
+        Returns a flat list of omitted model-fields; top-level and nested.
         Ensures that parsing of "fields"/"omit" has run by accessing ".fields".
         """
 
-        # Trigger parsing of _flat_omit and _nested_omit if not already set
-        if not hasattr(self, "_flat_omit") or not hasattr(self, "_nested_omit"):
-            _ = self.fields  # trigger parsing
+        # Trigger parsing of required attributes if not already set
+        if not all(
+            hasattr(self, attr)
+            for attr in ("_flat_omit", "_nested_omit", "_flat_allow", "_nested_allow")
+        ):
+            _ = self.fields
 
         flat_omit = getattr(self, "_flat_omit", [])
         nested_omit = getattr(self, "_nested_omit", {})
-
         deferred = []
-        # top-level
+        # Set omit top-level fields to defer
         deferred.extend(flat_omit)
-        # nested
+
+        # Set omit nested-level fields to defer
         deferred.extend(
             f"{parent}__{child}"
             for parent, children in nested_omit.items()
             for child in children
         )
+        # Set disallowed top-level fields to defer
+        deferred.extend(self._get_disallowed_top_level_fields_to_defer())
+        # Set disallowed nested-level fields to defer
+        deferred.extend(self._get_disallowed_nested_level_fields_to_defer())
 
-        deferred.extend(self._flat_whitelist_deferred())
-        deferred.extend(self._nested_whitelist_deferred())
-
-        # dedupe and preserve order
-        return list(dict.fromkeys(deferred))
+        # Remove any duplicate fields
+        return list(set(deferred))
 
 
 class DeferredFieldsMixin:
@@ -238,11 +246,12 @@ class DeferredFieldsMixin:
     @staticmethod
     def _split_deferred_fields(fields):
         """Split deferred fields into top‐level fields and nested relations."""
-        parent, nested = [], {}
+        parent = []
+        nested = {}
         for field in fields:
             if "__" in field:
-                rel, fld = field.split("__", 1)
-                nested.setdefault(rel, []).append(fld)
+                parent_field, child_field = field.split("__", 1)
+                nested.setdefault(parent_field, []).append(child_field)
             else:
                 parent.append(field)
         return parent, nested
@@ -252,22 +261,26 @@ class DeferredFieldsMixin:
         """For each nested relation, add a Prefetch that defers its specified
         fields.
         """
-        for rel, child_fields in nested_map.items():
-            field = serializer.fields.get(rel)
+        for parent_field, child_fields in nested_map.items():
+            field = serializer.fields.get(parent_field)
             if not field:
                 continue
 
-            child_ser = getattr(field, "child", field)
-            model = getattr(child_ser.Meta, "model", None)
+            child_serializer = getattr(field, "child", field)
+            model = getattr(child_serializer.Meta, "model", None)
             if not model:
                 continue
 
             qs = qs.prefetch_related(
-                Prefetch(rel, queryset=model.objects.defer(*child_fields))
+                Prefetch(parent_field, queryset=model.objects.defer(*child_fields))
             )
         return qs
 
     def get_queryset(self):
+        """
+        Returns a queryset with top-level and nested fields deferred to
+        optimize database retrieval.
+        """
         qs = super().get_queryset()
         # instantiate serializer so deferred fields are calculated
         serializer = self.get_serializer_class()(context=self.get_serializer_context())
