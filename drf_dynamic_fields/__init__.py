@@ -105,54 +105,24 @@ class DynamicFieldsMixin(object):
             if field in omitted:
                 fields.pop(field, None)
 
-        return fields
-
-    def to_representation(self, instance):
-        """This method prunes filtered fields from a nested serializer."""
-        representation = super(DynamicFieldsMixin, self).to_representation(instance)
-
-        # Apply nested omit on dicts and lists of dicts
-        for parent, omit_list in getattr(self, "_nested_omit", {}).items():
-            if parent not in representation:
-                continue
-            parent_instance = representation[parent]
-
-            def do_omit(d):
-                """Helper to drop fields on a single dict"""
+        # Drop omitted child fields from nested serializers
+        for parent, omit_list in self._nested_omit.items():
+            field = fields[parent]
+            nested_serializer = getattr(field, "child", field)
+            if hasattr(nested_serializer, "fields"):
                 for child in omit_list:
-                    d.pop(child, None)
+                    nested_serializer.fields.pop(child, None)
 
-            if isinstance(parent_instance, dict):
-                do_omit(parent_instance)
-            elif isinstance(parent_instance, list):
-                for item in parent_instance:
-                    if isinstance(item, dict):
-                        do_omit(item)
+        # Drop non-allowed child fields from the nested serializers
+        for parent, allow_list in self._nested_allow.items():
+            field = fields[parent]
+            nested_serializer = getattr(field, "child", field)
+            if hasattr(nested_serializer, "fields"):
+                for child_name in list(nested_serializer.fields):
+                    if child_name not in allow_list:
+                        nested_serializer.fields.pop(child_name, None)
 
-        # Apply nested allow on dicts and lists of dicts
-        for parent, allow_list in getattr(self, "_nested_allow", {}).items():
-            if parent not in representation:
-                continue
-
-            parent_instance = representation[parent]
-
-            def do_allow(d):
-                """Helper to include fields allowed on a single dict"""
-                return {
-                    field_name: field_value
-                    for field_name, field_value in d.items()
-                    if field_name in allow_list
-                }
-
-            if isinstance(parent_instance, dict):
-                representation[parent] = do_allow(parent_instance)
-            elif isinstance(parent_instance, list):
-                representation[parent] = [
-                    do_allow(item) if isinstance(item, dict) else item
-                    for item in parent_instance
-                ]
-
-        return representation
+        return fields
 
     def _get_disallowed_top_level_fields_to_defer(self):
         """
