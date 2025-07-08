@@ -24,3 +24,14 @@ class Child(models.Model):
 
 class Parent(models.Model):
     child = models.ForeignKey(Child, on_delete=models.CASCADE)
+
+
+class GrantParent(models.Model):
+    name = models.CharField(max_length=30)
+
+
+class ParentMany(models.Model):
+    name = models.CharField(max_length=30)
+    age = models.IntegerField()
+    grant_parent = models.ForeignKey(GrantParent, on_delete=models.CASCADE)
+    child = models.ManyToManyField(Child)

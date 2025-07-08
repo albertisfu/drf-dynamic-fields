@@ -4,9 +4,9 @@ For the tests.
 
 from rest_framework import serializers
 
-from drf_dynamic_fields import DynamicFieldsMixin, DeferredFieldsMixin
+from drf_dynamic_fields import DynamicFieldsMixin
 
-from .models import Teacher, School
+from .models import Teacher, School, ParentMany, Child
 
 
 class TeacherSerializer(DynamicFieldsMixin, serializers.ModelSerializer):
@@ -31,7 +31,7 @@ class TeacherSerializer(DynamicFieldsMixin, serializers.ModelSerializer):
 
 
 class SchoolSerializer(
-    DynamicFieldsMixin, DeferredFieldsMixin, serializers.ModelSerializer
+    DynamicFieldsMixin, serializers.ModelSerializer
 ):
     """
     Interesting enough serializer because the TeacherSerializer
@@ -49,7 +49,23 @@ class ChildSerializer(DynamicFieldsMixin, serializers.Serializer):
     secret = serializers.CharField()
     public = serializers.CharField()
 
+    class Meta:
+        model = Child
+
 
 class ParentSerializer(DynamicFieldsMixin, serializers.Serializer):
     id = serializers.IntegerField()
     child = ChildSerializer()
+
+class GrantParentSerializer(serializers.Serializer):
+    name = serializers.CharField()
+
+class ParentManySerializer(
+    DynamicFieldsMixin, serializers.ModelSerializer
+):
+    grant_parent = GrantParentSerializer(read_only=True)
+    child = ChildSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = ParentMany
+        fields = ("id", "name", "age","grant_parent", "child")

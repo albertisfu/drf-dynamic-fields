@@ -7,17 +7,16 @@ test_drf-dynamic-fields
 
 Test for the full request cycle using dynamic fields mixns
 """
-from collections import OrderedDict
 from unittest.mock import MagicMock
 
-from django.db.models import Prefetch
+import types
 from django.test import TestCase, RequestFactory
+from django.db.models import Prefetch
 
 from rest_framework.reverse import reverse
 
-from .serializers import SchoolSerializer, TeacherSerializer
 from .models import Teacher, School
-from .views import SchoolDeferredViewSet
+from .views import SchoolDeferredViewSet, ParentManyDeferredViewSet
 
 
 class TestDynamicFieldsViews(TestCase):
@@ -71,31 +70,31 @@ class DeferredFieldsMixinTests(TestCase):
     def setUp(self):
         self.factory = RequestFactory()
         self.view = SchoolDeferredViewSet.as_view({"get": "list"})
+        self.view_parent = ParentManyDeferredViewSet.as_view({"get": "list"})
 
     @staticmethod
     def make_qs_mock():
-        """
-        Mock that records .defer() and .prefetch_related() calls for testing.
-        """
-        qs_mock = MagicMock()
-        qs_mock._deferred_args = []
-        qs_mock._prefetch_args = []
+        qs = MagicMock()
 
-        def mock_defer(*args):
-            qs_mock._deferred_args.extend(args)
-            return qs_mock
+        qs.query = types.SimpleNamespace(
+            values_select=False,
+            annotations={},
+            select_related=[],
+            deferred_loading=([], []),
+            deferred_fields=set(),
+        )
 
-        qs_mock.defer.side_effect = mock_defer
+        qs._deferred_args = []
+        def _defer(*fields):
+            qs._deferred_args.extend(fields)
+            return qs
 
-        def mock_prefetch(*lookups):
-            for lookup in lookups:
-                if isinstance(lookup, Prefetch):
-                    qs_mock._prefetch_args.append(lookup)
-            return qs_mock
+        qs.defer.side_effect = _defer
 
-        qs_mock.prefetch_related.side_effect = mock_prefetch
+        qs._prefetch_related_lookups = []
+        qs._clone.return_value = qs
 
-        return qs_mock
+        return qs
 
     def test_deffer_nested_omitted_fields(self):
         """Nested level fields omitted should be deferred."""
@@ -111,12 +110,15 @@ class DeferredFieldsMixinTests(TestCase):
         self.assertEqual(qs_mock._deferred_args, ["name"])
 
         # One Prefetch on teachers
-        self.assertEqual(response.data["prefetches"], ["teachers"])
-        self.assertEqual(len(qs_mock._prefetch_args), 1)
+        prefetches = [
+            p for p in qs_mock._prefetch_related_lookups
+            if isinstance(p, Prefetch)
+        ]
+        self.assertEqual(len(prefetches), 1)
+        self.assertEqual(prefetches[0].prefetch_to, "teachers")
 
         # Confirm the prefetch deferred field matches.
-        prefetch = qs_mock._prefetch_args[0]
-        deferred_fields, _ = prefetch.queryset.query.deferred_loading
+        deferred_fields, _ = prefetches[0].queryset.query.deferred_loading
         self.assertIn("age", deferred_fields)
 
     def test_deffer_nested_no_selected_fields(self):
@@ -132,12 +134,15 @@ class DeferredFieldsMixinTests(TestCase):
         self.assertEqual(qs_mock._deferred_args, ["name"])
 
         # One Prefetch for teachers
-        self.assertEqual(response.data["prefetches"], ["teachers"])
-        self.assertEqual(len(qs_mock._prefetch_args), 1)
+        prefetches = [
+            p for p in qs_mock._prefetch_related_lookups
+            if isinstance(p, Prefetch)
+        ]
+        self.assertEqual(len(prefetches), 1)
+        self.assertEqual(prefetches[0].prefetch_to, "teachers")
 
         # Confirm the prefetch deferred field matches the no selected fields.
-        prefetch = qs_mock._prefetch_args[0]
-        deferred_fields, _ = prefetch.queryset.query.deferred_loading
+        deferred_fields, _ = prefetches[0].queryset.query.deferred_loading
         self.assertEqual(deferred_fields, {"age", "id"})
 
     def test_deffer_nested_fields_combining_fields_and_omit(self):
@@ -159,10 +164,34 @@ class DeferredFieldsMixinTests(TestCase):
         self.assertEqual(qs_mock._deferred_args, ["name"])
 
         # One Prefetch for teachers
-        self.assertEqual(response.data["prefetches"], ["teachers"])
-        self.assertEqual(len(qs_mock._prefetch_args), 1)
+        prefetches = [
+            p for p in qs_mock._prefetch_related_lookups
+            if isinstance(p, Prefetch)
+        ]
+        self.assertEqual(len(prefetches), 1)
+        self.assertEqual(prefetches[0].prefetch_to, "teachers")
 
         # Confirm the prefetch deferred field matches the no selected fields.
-        prefetch = qs_mock._prefetch_args[0]
-        deferred_fields, _ = prefetch.queryset.query.deferred_loading
+        deferred_fields, _ = prefetches[0].queryset.query.deferred_loading
         self.assertEqual(deferred_fields, {"age", "id"})
+
+    def test_deffer_fields_custom_queryset(self):
+        """ Confirms that the deferring fields logic works correctly with a custom
+        queryset that uses select_related and prefetch_related.
+        """
+        request = self.factory.get(
+            "/",
+            {
+                "fields": "name,age,child__secret,child__public",
+                "omit": "age,child__public",
+            },
+        )
+        response = self.view_parent(request)
+        self.assertEqual(response.status_code, 200)
+
+        deferred_fields = response.data["deferred"]
+        self.assertEqual(deferred_fields, {"age", "id"})
+
+        prefetches = response.data["prefetches"]
+        self.assertEqual(len(prefetches), 2)
+        self.assertIn("child", prefetches)
