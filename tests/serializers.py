@@ -5,7 +5,7 @@ from rest_framework import serializers
 
 from drf_dynamic_fields import DynamicFieldsMixin
 
-from .models import Teacher, School
+from .models import Teacher, School, Child
 
 
 class TeacherSerializer(DynamicFieldsMixin, serializers.ModelSerializer):
@@ -40,3 +40,16 @@ class SchoolSerializer(DynamicFieldsMixin, serializers.ModelSerializer):
     class Meta:
         model = School
         fields = ("id", "teachers", "name")
+
+
+class ChildSerializer(DynamicFieldsMixin, serializers.Serializer):
+    secret = serializers.CharField()
+    public = serializers.CharField()
+
+    class Meta:
+        model = Child
+
+
+class ParentSerializer(DynamicFieldsMixin, serializers.Serializer):
+    id = serializers.IntegerField()
+    child = ChildSerializer()
