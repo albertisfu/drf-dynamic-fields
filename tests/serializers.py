@@ -5,7 +5,7 @@ from rest_framework import serializers
 
 from drf_dynamic_fields import DynamicFieldsMixin, NestedDynamicFieldsMixin
 
-from .models import Teacher, School, Child
+from .models import Teacher, School, Child, Student
 
 
 class BaseTeacherSerializer(serializers.ModelSerializer):
@@ -29,12 +29,33 @@ class TeacherSerializer(DynamicFieldsMixin, BaseTeacherSerializer):
     pass
 
 
+class NestableStudentSerializer(NestedDynamicFieldsMixin, serializers.ModelSerializer):
+
+    class Meta:
+        model = Student
+        fields = ("id", "name", "age")
+
+
 class NestableTeacherSerializer(NestedDynamicFieldsMixin, BaseTeacherSerializer):
     """
     The request_info field is to highlight the issue accessing request during
     a nested serializer.
-
     """
+
+    students = NestableStudentSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Teacher
+        fields = ("id", "request_info", "age", "name", "students")
+
+    def get_request_info(self, teacher):
+        """
+        a meaningless method that attempts
+        to access the request object.
+        """
+        request = self.context["request"]
+        return request.build_absolute_uri("/api/v1/teacher/{}".format(teacher.pk))
+
 
 class BaseSchoolSerializer(serializers.ModelSerializer):
 

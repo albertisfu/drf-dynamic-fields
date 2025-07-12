@@ -18,7 +18,7 @@ from .serializers import (
     TeacherSerializer,
     ParentSerializer,
 )
-from .models import Teacher, School, Child, Parent
+from .models import Teacher, School, Child, Parent, Student
 
 
 class TestDynamicFieldsMixin(TestCase):
@@ -185,7 +185,7 @@ class TestDynamicFieldsMixin(TestCase):
         serializer.context["request"] = request2
         self.assertEqual(set(serializer.fields.keys()), {"id"})
 
-class TestNestedDynamicFieldsMixin(TestDynamicFieldsMixin):
+class TestNestedDynamicFieldsMixin(TestCase):
     """
     Test case for the NestedDynamicFieldsMixin
     """
@@ -221,43 +221,69 @@ class TestNestedDynamicFieldsMixin(TestDynamicFieldsMixin):
             Teacher.objects.create(name="Kaz", age=29),
         ]
         school.teachers.add(*teachers)
-        return school
+        student = Student.objects.create(name="Shannon", age=23)
+        teachers[0].students.add(student)
+
+        school_2 = School.objects.create(name="Python Heights High")
+        teachers = [
+            Teacher.objects.create(name="Shane 2", age=46),
+            Teacher.objects.create(name="Kaz 2", age=30),
+        ]
+        school_2.teachers.add(*teachers)
+
+        return [school, school_2]
 
     def test_omit_nested_field(self):
         """Omitting a nested field"""
         rf = RequestFactory()
-        request = rf.get("/api/v1/schools/1/?omit=invalid,name,teachers__age,teachers__invalid")
+        request = rf.get("/api/v1/schools/1/?omit=invalid,name,teachers__age,teachers__invalid,teachers__students__age")
 
-        school = self._prepare_school_instance()
-        serializer = self.SchoolSerializer(school, context={"request": request})
+        # Single nested instance.
+        schools = self._prepare_school_instance()
+        serializer = self.SchoolSerializer(schools[0], context={"request": request})
         data = serializer.data
-
-        # Confirm omitted fields are in deferred list
-        deferred = set(serializer.get_model_fields_to_defer())
-        self.assertEqual({"name", "teachers__age"}, deferred)
-
-        expected_fields = {"id": None, "teachers": ["id", "name", "request_info"]}
+        expected_fields = {"id": None, "teachers": ["id", "name", "request_info", "students"]}
+        third_level_expected_fields = {"id":None, "name":None, "request_info":None, "students":["id", "name"]}
         # Assert top‐level keys exactly match
         self.assertEqual(set(data.keys()), set(expected_fields.keys()))
-
         # Assert nested fields.
         self._assert_nested_fields(data, expected_fields)
+        # Assert third level fields:
+        self._assert_nested_fields(data["teachers"][0], third_level_expected_fields)
+
+        # Multiple nested instances:
+        serializer = self.SchoolSerializer(schools, many=True, context={"request": request})
+        data = serializer.data[0]
+        # Assert top‐level keys exactly match
+        self.assertEqual(set(data.keys()), set(expected_fields.keys()))
+        # Assert nested fields.
+        self._assert_nested_fields(data, expected_fields)
+        # Assert third level fields:
+        self._assert_nested_fields(data["teachers"][0], third_level_expected_fields)
+
 
     def test_omit_everything_nested_field(self):
         """Omitting all fields within a nested field"""
         rf = RequestFactory()
         request = rf.get(
-            "/api/v1/schools/1/?omit=teachers__id,teachers__age,teachers__name,teachers__request_info"
+            "/api/v1/schools/1/?omit=teachers__id,teachers__age,teachers__name,teachers__request_info,teachers__students"
         )
-
-        school = self._prepare_school_instance()
-        serializer = self.SchoolSerializer(school, context={"request": request})
+        # Single nested instance.
+        schools = self._prepare_school_instance()
+        serializer = self.SchoolSerializer(schools[0], context={"request": request})
         data = serializer.data
 
         expected_fields = {"id": None, "name": None, "teachers": []}
         # Assert top‐level keys exactly match
         self.assertEqual(set(data.keys()), set(expected_fields.keys()))
+        # Assert nested fields.
+        self._assert_nested_fields(data, expected_fields)
 
+        # Multiple nested instances:
+        serializer = self.SchoolSerializer(schools, many=True, context={"request": request})
+        data = serializer.data[0]
+        # Assert top‐level keys exactly match
+        self.assertEqual(set(data.keys()), set(expected_fields.keys()))
         # Assert nested fields.
         self._assert_nested_fields(data, expected_fields)
 
@@ -266,38 +292,53 @@ class TestNestedDynamicFieldsMixin(TestDynamicFieldsMixin):
         rf = RequestFactory()
         request = rf.get("/api/v1/schools/1/?omit=name")
 
-        school = self._prepare_school_instance()
-        serializer = self.SchoolSerializer(school, context={"request": request})
+        schools = self._prepare_school_instance()
+        # Single nested instance.
+        serializer = self.SchoolSerializer(schools[0], context={"request": request})
         data = serializer.data
-
         expected_fields = {
             "id": None,
-            "teachers": ["id", "name", "request_info", "age"],
+            "teachers": ["id", "name", "request_info", "age", "students"],
         }
         # Assert top‐level keys exactly match
         self.assertEqual(set(data.keys()), set(expected_fields.keys()))
+        # Assert nested fields.
+        self._assert_nested_fields(data, expected_fields)
 
+        # Multiple nested instances:
+        serializer = self.SchoolSerializer(schools, many=True, context={"request": request})
+        data = serializer.data[0]
+        # Assert top‐level keys exactly match
+        self.assertEqual(set(data.keys()), set(expected_fields.keys()))
         # Assert nested fields.
         self._assert_nested_fields(data, expected_fields)
 
     def test_allow_nested_field(self):
         """Select only the requested fields, including nested-level fields."""
         rf = RequestFactory()
-        request = rf.get("/api/v1/schools/1/?fields=invalid,id,teachers__age,teachers__invalid")
-        school = self._prepare_school_instance()
-        serializer = self.SchoolSerializer(school, context={"request": request})
-
-        # Confirm omitted fields are in deferred list
-        deferred = set(serializer.get_model_fields_to_defer())
-        self.assertEqual({"name","teachers__name", "teachers__id"}, deferred)
-
+        request = rf.get("/api/v1/schools/1/?fields=invalid,id,teachers__age,teachers__invalid,teachers__students__age")
+        schools = self._prepare_school_instance()
+        # Single nested instance.
+        serializer = self.SchoolSerializer(schools[0], context={"request": request})
         data = serializer.data
-        expected_fields = {"id": None, "teachers": ["age"]}
+        expected_fields = {"id": None, "teachers": ["age", "students"]}
+        third_level_expected_fields = {"age":None, "students":["age"]}
         # Assert top‐level keys exactly match
         self.assertEqual(set(data.keys()), set(expected_fields.keys()))
-
         # Assert nested fields.
         self._assert_nested_fields(data, expected_fields)
+        # Assert third level fields:
+        self._assert_nested_fields(data["teachers"][0], third_level_expected_fields)
+
+        # Multiple nested instances:
+        serializer = self.SchoolSerializer(schools, many=True, context={"request": request})
+        data = serializer.data[0]
+        # Assert top‐level keys exactly match
+        self.assertEqual(set(data.keys()), set(expected_fields.keys()))
+        # Assert nested fields.
+        self._assert_nested_fields(data, expected_fields)
+        # Assert third level fields:
+        self._assert_nested_fields(data["teachers"][0], third_level_expected_fields)
 
     def test_fields_all_gone_nested(self):
         """If no fields are selected, all fields are omitted, including those
@@ -305,14 +346,21 @@ class TestNestedDynamicFieldsMixin(TestDynamicFieldsMixin):
         """
         rf = RequestFactory()
         request = rf.get("/api/v1/schools/1/?fields")
-        school = self._prepare_school_instance()
-        serializer = self.SchoolSerializer(school, context={"request": request})
-
+        schools = self._prepare_school_instance()
+        # Single nested instance.
+        serializer = self.SchoolSerializer(schools[0], context={"request": request})
         data = serializer.data
         expected_fields = {}
         # Assert top‐level keys exactly match
         self.assertEqual(set(data.keys()), set(expected_fields.keys()))
+        # Assert nested fields.
+        self._assert_nested_fields(data, expected_fields)
 
+        # Multiple nested instances:
+        serializer = self.SchoolSerializer(schools, many=True, context={"request": request})
+        data = serializer.data[0]
+        # Assert top‐level keys exactly match
+        self.assertEqual(set(data.keys()), set(expected_fields.keys()))
         # Assert nested fields.
         self._assert_nested_fields(data, expected_fields)
 
@@ -322,14 +370,21 @@ class TestNestedDynamicFieldsMixin(TestDynamicFieldsMixin):
         request = rf.get(
             "/api/v1/schools/1/?fields=id,name,teachers__name,teachers__age&omit=name,teachers__name"
         )
-        school = self._prepare_school_instance()
-        serializer = self.SchoolSerializer(school, context={"request": request})
-
+        schools = self._prepare_school_instance()
+        # Single nested instance.
+        serializer = self.SchoolSerializer(schools[0], context={"request": request})
         data = serializer.data
         expected_fields = {"id": None, "teachers": ["age"]}
         # Assert top‐level keys exactly match
         self.assertEqual(set(data.keys()), set(expected_fields.keys()))
+        # Assert nested fields.
+        self._assert_nested_fields(data, expected_fields)
 
+        # Multiple nested instances:
+        serializer = self.SchoolSerializer(schools, many=True, context={"request": request})
+        data = serializer.data[0]
+        # Assert top‐level keys exactly match
+        self.assertEqual(set(data.keys()), set(expected_fields.keys()))
         # Assert nested fields.
         self._assert_nested_fields(data, expected_fields)
 
@@ -339,18 +394,25 @@ class TestNestedDynamicFieldsMixin(TestDynamicFieldsMixin):
         """
         rf = RequestFactory()
         request = rf.get("/api/v1/schools/1/?omit")
-        school = self._prepare_school_instance()
-        serializer = self.SchoolSerializer(school, context={"request": request})
-
+        schools = self._prepare_school_instance()
+        # Single nested instance.
+        serializer = self.SchoolSerializer(schools[0], context={"request": request})
         data = serializer.data
         expected_fields = {
             "id": None,
             "name": None,
-            "teachers": ["id", "age", "name", "request_info"],
+            "teachers": ["id", "age", "name", "request_info", "students"],
         }
         # Assert top‐level keys exactly match
         self.assertEqual(set(data.keys()), set(expected_fields.keys()))
+        # Assert nested fields.
+        self._assert_nested_fields(data, expected_fields)
 
+        # Multiple nested instances:
+        serializer = self.SchoolSerializer(schools, many=True, context={"request": request})
+        data = serializer.data[0]
+        # Assert top‐level keys exactly match
+        self.assertEqual(set(data.keys()), set(expected_fields.keys()))
         # Assert nested fields.
         self._assert_nested_fields(data, expected_fields)
 

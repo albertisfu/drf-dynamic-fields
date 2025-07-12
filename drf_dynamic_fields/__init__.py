@@ -17,13 +17,12 @@ class DynamicFieldsMixin(object):
     """
 
     @property
-    def is_preventing_nested_serializers(self):
-        is_root = self.root == self
-        parent_is_list_root = self.parent == self.root and getattr(
-            self.parent, "many", False
+    def prevent_nested_processing(self) -> bool:
+        """True when this serializer is not the root nor a root’s list-child."""
+        return not (
+            self is self.root
+            or (self.parent is self.root and getattr(self.parent, "many", False))
         )
-
-        return not (is_root or parent_is_list_root)
 
     @cached_property
     def fields(self):
@@ -41,7 +40,7 @@ class DynamicFieldsMixin(object):
             # We are being called before a request cycle
             return fields
 
-        if self.is_preventing_nested_serializers:
+        if self.prevent_nested_processing:
             return fields
 
         try:
@@ -64,7 +63,9 @@ class DynamicFieldsMixin(object):
         source = get_source_path(self)
         level = compute_level(self)
 
-        filter_fields = self.get_filter_fields(params.get("fields", None), level, source)
+        filter_fields = self.get_filter_fields(
+            params.get("fields", None), level, source
+        )
         omit_fields = self.get_omit_fields(params.get("omit", None), level, source)
 
         # Drop any fields that are not specified in the `fields` argument.
@@ -88,72 +89,114 @@ class DynamicFieldsMixin(object):
 
         return fields
 
-    def get_filter_fields(self, params, level, source, default=None, include_parent=True):
+    def get_filter_fields(
+        self, params, level, source, default=None, include_parent=True
+    ):
         try:
             return params.split(",")
         except AttributeError:
             return default
 
-
     def get_omit_fields(self, params, level, source):
-        return self.get_filter_fields(params, level, source, default=[], include_parent=False)
+        return self.get_filter_fields(
+            params, level, source, default=[], include_parent=False
+        )
 
 
 class NestedDynamicFieldsMixin(DynamicFieldsMixin):
+    """A serializer mixin that extends DynamicFieldsMixin to allow nested serializers
+    to filter their fields based on the original `fields` query parameter.
+
+    Unlike the base mixin—which only applies filtering at the root serializer,
+    this subclass:
+
+    - Disables the `prevent_nested_processing` guard, allowing each level of nested
+    serializer to apply field filtering independently.
+    - Overrides `get_filter_fields` to slice the raw `fields` string
+    down to exactly those names relevant at this serializer’s
+    current nesting depth (using get_fields_for_level_and_prefix).
+    - `get_filter_fields` first delegates to the super method for splitting
+      the comma‐separated string, then calls a helper that:
+        • Selects only the fields that are nested under this serializer's path in
+          the hierarchy
+        • Returns direct children at depth `level + 1`
+    """
 
     @property
-    def is_preventing_nested_serializers(self):
+    def prevent_nested_processing(self):
         return False
 
-    def get_filter_fields(self, params, level, source, default=None, include_parent=True):
-        fields = super().get_filter_fields(params, level, source, default, include_parent)
+    def get_filter_fields(
+        self, params, level, source, default=None, include_parent=True
+    ):
+        """
+        Parse the raw `fields` parameter and return the subset of fields
+        that apply at this serializer’s nesting level under the given
+        source prefix.
+        """
+        fields = super().get_filter_fields(
+            params, level, source, default, include_parent
+        )
         return get_fields_for_level_and_prefix(
-                fields,
-                level,
-                source,
-                default=default,
-                include_parent=include_parent
-            )
+            fields, level, source, default=default, include_parent=include_parent
+        )
 
-def get_source_path(serializer):
-    parts = []
-    current = serializer
-    while current.parent is not None:
-        if hasattr(current, 'field_name'):
-            parts.insert(0, current.field_name)
-        current = current.parent
-    return "__".join(filter(None, parts))
 
-def get_fields_for_level_and_prefix(fields_list, level, source, include_parent, default):
+def get_source_path(serializer) -> str:
+    """Recursively walks up the serializer tree to build the nested field path."""
+    parent = getattr(serializer, "parent", None)
+    if not parent:
+        return ""
+    parent_path = get_source_path(parent)
+    name = getattr(serializer, "field_name", None)
+    if not name:
+        return parent_path
+    return f"{parent_path}__{name}" if parent_path else name
+
+
+def get_fields_for_level_and_prefix(
+    fields_list, level, source, include_parent, default
+):
+    """Filter a list of dotted field names down to those relevant at a given
+    nesting level and prefix.
+    """
     if not fields_list:
         return default
 
-    allowed = set()
     prefix = source.split("__") if source else []
+    allowed = set()
     for f in fields_list:
         parts = f.split("__")
+
         if parts[:level] != prefix:
             continue
+
         if len(parts) <= level + 1:
             allowed.add(parts[-1])
-        elif len(parts) > level + 1 and include_parent:
+            continue
+
+        if len(parts) > level + 1 and include_parent:
             # include parent field to ensure nesting proceeds
             allowed.add(parts[level])
-    if set(prefix) == allowed:
+            continue
+
+    if allowed == set(prefix):
         return default
+
     return allowed
 
-def compute_level(serializer):
-    level = 0
-    current = serializer
-    while hasattr(current, 'parent') and current.parent is not None:
-        parent = current.parent
 
-        # Handle ListSerializer by skipping over it
-        if isinstance(parent, serializers.ListSerializer):
-            current = parent.parent
-        else:
-            current = parent
+def compute_level(serializer) -> int:
+    """Recursively count how many ancestors of `serializer` are not
+    ListSerializer instances. Stops when parent is None.
+    """
+    parent = getattr(serializer, "parent", None)
+    if parent is None:
+        # base case, reached the top
+        return 0
 
-        level += 1
-    return level
+    # if this immediate parent is a ListSerializer, don’t count it, otherwise 1
+    this_level = 0 if isinstance(parent, serializers.ListSerializer) else 1
+
+    # recurse on the parent itself
+    return this_level + compute_level(parent)
