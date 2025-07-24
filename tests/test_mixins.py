@@ -185,6 +185,7 @@ class TestDynamicFieldsMixin(TestCase):
         serializer.context["request"] = request2
         self.assertEqual(set(serializer.fields.keys()), {"id"})
 
+
 class TestNestedDynamicFieldsMixin(TestCase):
     """
     Test case for the NestedDynamicFieldsMixin
@@ -260,7 +261,6 @@ class TestNestedDynamicFieldsMixin(TestCase):
         self._assert_nested_fields(data, expected_fields)
         # Assert third level fields:
         self._assert_nested_fields(data["teachers"][0], third_level_expected_fields)
-
 
     def test_omit_everything_nested_field(self):
         """Omitting all fields within a nested field"""

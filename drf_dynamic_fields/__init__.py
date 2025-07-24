@@ -157,8 +157,8 @@ def get_source_path(serializer) -> str:
 def get_fields_for_level_and_prefix(
     fields_list, level, source, include_parent, default
 ):
-    """Filter a list of dotted field names down to those relevant at a given
-    nesting level and prefix.
+    """Extract the field names relevant to a specific nesting depth
+    from a list of double‑underscore lookup strings.
     """
     if not fields_list:
         return default
@@ -180,6 +180,9 @@ def get_fields_for_level_and_prefix(
             allowed.add(parts[level])
             continue
 
+
+    # If the only allowed fields are exactly the prefix itself,
+    # fall back to default
     if allowed == set(prefix):
         return default
 
